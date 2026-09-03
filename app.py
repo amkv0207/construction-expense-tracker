@@ -57,14 +57,44 @@ with st.sidebar.form("expense_form", clear_on_submit=True):
 # --- Dashboard ---
 st.subheader("Recent Expenses Dashboard")
 
-# Fetch the most up-to-date data to display
 df = conn.read(ttl=0)
+
+# Drop completely empty rows if any exist
+df = df.dropna(subset=['amount'])
 
 if not df.empty and df['amount'].sum() > 0:
     total_spent = df['amount'].sum()
     st.metric(label="Total Construction Spend", value=f"₹{total_spent:,.2f}")
 
-    st.markdown("**All Expense Records**")
-    st.dataframe(df, use_container_width=True)
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Spending by Phase**")
+        phase_spend = df.groupby("phase")["amount"].sum().reset_index()
+        fig1 = px.pie(phase_spend, values='amount', names='phase', hole=0.4)
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+        st.markdown("**Spending by Category**")
+        category_spend = df.groupby("category")["amount"].sum().reset_index()
+        fig2 = px.bar(category_spend, x='category', y='amount', color='category')
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with st.expander("🔍 View and Edit All Records"):
+        st.info(
+            "💡 Tip: Select a row by clicking its number on the left, then press 'Delete' on your keyboard. Or, use the trash can icon on mobile.")
+
+        # Display an interactive table that allows row deletion
+        edited_df = st.data_editor(
+            df,
+            num_rows="dynamic",  # This enables deleting/adding rows
+            use_container_width=True
+        )
+
+        # Add a button to save the deletions back to Google Sheets
+        if st.button("Save Changes to Database"):
+            conn.update(data=edited_df)
+            st.success("Database successfully updated!")
+            st.rerun()
 else:
     st.info("No expenses logged yet. Use the sidebar to add your first transaction!")
