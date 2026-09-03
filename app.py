@@ -1,35 +1,21 @@
-import plotly.express as px
 import streamlit as st
-import sqlite3
 import pandas as pd
-import os
+from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 
-# --- STEP 1: Database Setup ---
-if not os.path.exists("receipts"):
-    os.makedirs("receipts")
-
-conn = sqlite3.connect('construction_expenses.db', check_same_thread=False)
-c = conn.cursor()
-
-c.execute('''
-    CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT,
-        phase TEXT,
-        category TEXT,
-        vendor TEXT,
-        amount REAL,
-        receipt_path TEXT
-    )
-''')
-conn.commit()
-
-# --- STEP 2: Page Configuration ---
+# --- Page Configuration ---
 st.set_page_config(page_title="Home Build Tracker", layout="wide")
 st.title("🏗️ Home Construction Expense Tracker")
 
-# --- STEP 3 & 4: Data Entry Form and Processing ---
+# --- Google Sheets Connection ---
+# Initialize the connection to Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Read the existing data
+# We use ttl=0 to bypass the cache so the app always fetches the latest data
+existing_data = conn.read(ttl=0)
+
+# --- Data Entry Form ---
 st.sidebar.header("Log New Expense")
 
 with st.sidebar.form("expense_form", clear_on_submit=True):
@@ -45,51 +31,40 @@ with st.sidebar.form("expense_form", clear_on_submit=True):
 
     if submitted:
         if vendor and amount > 0:
-            receipt_path = None
+            receipt_name = receipt.name if receipt is not None else "No Receipt"
 
-            if receipt is not None:
-                receipt_path = os.path.join("receipts", receipt.name)
-                with open(receipt_path, "wb") as f:
-                    f.write(receipt.getbuffer())
+            # Create a new row of data
+            new_row = pd.DataFrame([{
+                "date": date.strftime("%Y-%m-%d"),
+                "phase": phase,
+                "category": category,
+                "vendor": vendor,
+                "amount": amount,
+                "receipt_path": receipt_name
+            }])
 
-            c.execute('''
-                INSERT INTO expenses (date, phase, category, vendor, amount, receipt_path)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (date.strftime("%Y-%m-%d"), phase, category, vendor, amount, receipt_path))
+            # Combine the old data with the new row
+            updated_data = pd.concat([existing_data, new_row], ignore_index=True)
 
-            conn.commit()
-            st.sidebar.success("Expense saved successfully!")
+            # Write the entire updated dataframe back to Google Sheets
+            conn.update(data=updated_data)
+
+            st.sidebar.success("Expense saved successfully to Google Sheets!")
+            st.rerun()
         else:
             st.sidebar.error("Please enter a valid Vendor and Amount.")
 
-# --- STEP 5: Upgraded Dashboard ---
+# --- Dashboard ---
 st.subheader("Recent Expenses Dashboard")
 
-df = pd.read_sql_query("SELECT * FROM expenses ORDER BY date DESC", conn)
+# Fetch the most up-to-date data to display
+df = conn.read(ttl=0)
 
-if not df.empty:
+if not df.empty and df['amount'].sum() > 0:
     total_spent = df['amount'].sum()
     st.metric(label="Total Construction Spend", value=f"₹{total_spent:,.2f}")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Spending by Phase**")
-        # Group data and create an interactive donut chart
-        phase_spend = df.groupby("phase")["amount"].sum().reset_index()
-        fig1 = px.pie(phase_spend, values='amount', names='phase', hole=0.4)
-        st.plotly_chart(fig1, use_container_width=True)
-
-    with col2:
-        st.markdown("**Spending by Category**")
-        # Group data and create an interactive colored bar chart
-        category_spend = df.groupby("category")["amount"].sum().reset_index()
-        fig2 = px.bar(category_spend, x='category', y='amount', color='category')
-        st.plotly_chart(fig2, use_container_width=True)
-
-    # Hide the raw data behind a clean, clickable expander
-    with st.expander("🔍 View and Search Raw Expense Records"):
-        display_df = df.drop(columns=['id'])
-        st.dataframe(display_df, use_container_width=True)
+    st.markdown("**All Expense Records**")
+    st.dataframe(df, use_container_width=True)
 else:
     st.info("No expenses logged yet. Use the sidebar to add your first transaction!")
